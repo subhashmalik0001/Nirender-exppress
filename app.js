@@ -347,6 +347,8 @@ document.addEventListener("DOMContentLoaded", () => {
   renderAdminDashboardStats();
   renderAdminOrders();
   syncAdminOrdersFromCloud();
+  syncProductsFromCloud();
+  syncCategoriesFromCloud();
   initAddProductForm();
   updateCartBadge();
 
@@ -1499,10 +1501,10 @@ function saveAdminCategories() {
   }
 }
 
-// --- SUPABASE CENTRALIZED CLOUD ORDERS BACKEND ---
+// --- SUPABASE CENTRALIZED CLOUD ORDERS & INVENTORY BACKEND ---
 const SUPABASE_CONFIG = {
-  url: window.__SUPABASE_URL__ || "https://enmazhpxzwkhyvduihds.supabase.co",
-  anonKey: window.__SUPABASE_ANON_KEY__ || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVubWF6aHB4endraHl2ZHVpaGRzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAxNzczMjYsImV4cCI6MjEwNTc1MzMyNn0.NoTbJXQwbjLXJFuDgxkrpV7hBRML_FCRqQjgj_7i9qc"
+  url: window.__SUPABASE_URL__ || "https://qssgwytrtpyxukjypfxy.supabase.co",
+  anonKey: window.__SUPABASE_ANON_KEY__ || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzc2d3eXRydHB5eHVranlwZnh5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNDY1MjksImV4cCI6MjEwNzYyMjUyOX0.DjLggD9Wdg8pGRzZA8gGRybcJ0doyG4kAL20-0i_8uU"
 };
 
 function isSupabaseConfigured() {
@@ -1520,7 +1522,7 @@ async function supabaseFetch(path, options = {}) {
     "apikey": SUPABASE_CONFIG.anonKey,
     "Authorization": `Bearer ${SUPABASE_CONFIG.anonKey}`,
     "Content-Type": "application/json",
-    "Prefer": options.prefer || "return=representation",
+    "Prefer": options.prefer || options.headers?.Prefer || "return=representation",
     ...(options.headers || {})
   };
   const url = `${SUPABASE_CONFIG.url}/rest/v1/${path}`;
@@ -1529,6 +1531,7 @@ async function supabaseFetch(path, options = {}) {
     const errorText = await res.text().catch(() => "");
     throw new Error(`Supabase API error (${res.status}): ${errorText}`);
   }
+  if (res.status === 204) return [];
   return await res.json().catch(() => null);
 }
 
@@ -1583,6 +1586,7 @@ async function saveNewOrder(orderData) {
       customer_name: orderData.customer?.name || "Customer",
       phone: orderData.customer?.phone || "N/A",
       alt_phone: orderData.customer?.altPhone || null,
+      email: orderData.customer?.email || null,
       address: orderData.customer?.address || "N/A",
       city: orderData.customer?.city || null,
       state: orderData.customer?.state || null,
@@ -1594,6 +1598,7 @@ async function saveNewOrder(orderData) {
       delivery_charge: Number(orderData.deliveryCharge || 50),
       total: Number(orderData.total || 0),
       status: orderData.status || "PROCESSING",
+      email_status: orderData.emailStatus || "PENDING",
       created_at: orderData.date || new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -1624,6 +1629,7 @@ async function syncAdminOrdersFromCloud() {
           name: row.customer_name,
           phone: row.phone,
           altPhone: row.alt_phone,
+          email: row.email || "",
           address: row.address,
           city: row.city,
           state: row.state,
@@ -1634,7 +1640,8 @@ async function syncAdminOrdersFromCloud() {
         subtotal: Number(row.subtotal || 0),
         deliveryCharge: Number(row.delivery_charge || 50),
         total: Number(row.total || 0),
-        status: row.status || "PROCESSING"
+        status: row.status || "PROCESSING",
+        emailStatus: row.email_status || "PENDING"
       }));
 
       saveAdminOrders(orders);
@@ -1646,6 +1653,83 @@ async function syncAdminOrdersFromCloud() {
     console.warn("[Supabase Orders] Could not sync orders from cloud:", err);
   }
   return loadAdminOrders();
+}
+
+// Sync all products from Supabase cloud database into frontend and admin
+async function syncProductsFromCloud() {
+  if (!isSupabaseConfigured()) {
+    return state.products;
+  }
+
+  try {
+    const rows = await supabaseFetch("products?select=*&order=created_at.asc");
+    if (Array.isArray(rows)) {
+      const cloudProducts = rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        category: r.category,
+        categoryName: r.category_name,
+        subcategory: r.subcategory || "",
+        brand: r.brand,
+        originalPrice: Number(r.original_price),
+        discountedPrice: Number(r.discounted_price),
+        rating: Number(r.rating || 5.0),
+        reviewsCount: Number(r.reviews_count || 0),
+        image: r.image,
+        description: r.description || "",
+        specs: (typeof r.specs === "object" && r.specs) ? r.specs : {},
+        inStock: Boolean(r.in_stock),
+        quantity: Number(r.quantity || 0),
+        featured: Boolean(r.featured)
+      }));
+
+      const isChanged = JSON.stringify(cloudProducts) !== JSON.stringify(state.products);
+      if (isChanged || state.products.length === 0) {
+        state.products = cloudProducts;
+        saveProducts();
+        applyFilters();
+        renderProducts();
+        renderFeaturedProducts();
+        renderAdminProducts();
+        renderAdminBrands();
+        renderAdminCategoriesTree();
+        updateAllProductSteppers();
+        populateAdminBrandDropdown();
+      }
+      return cloudProducts;
+    }
+  } catch (err) {
+    console.warn("[Supabase Products] Could not sync products from cloud:", err);
+  }
+  return state.products;
+}
+
+// Sync all categories from Supabase cloud database into frontend and admin
+async function syncCategoriesFromCloud() {
+  if (!isSupabaseConfigured()) {
+    return state.categories;
+  }
+
+  try {
+    const rows = await supabaseFetch("categories?select=*&order=created_at.asc");
+    if (Array.isArray(rows) && rows.length > 0) {
+      state.categories = rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        image: r.image || "",
+        subcategories: Array.isArray(r.subcategories) ? r.subcategories : []
+      }));
+      try {
+        localStorage.setItem("ntt_categories", JSON.stringify(state.categories));
+      } catch (e) {}
+      renderAdminCategoriesTree();
+      populateAdminCategoryDropdown();
+      return state.categories;
+    }
+  } catch (err) {
+    console.warn("[Supabase Categories] Could not sync categories from cloud:", err);
+  }
+  return state.categories;
 }
 
 async function updateOrderStatus(orderId, newStatus) {
@@ -2230,21 +2314,48 @@ function toggleProductFeatured(productId) {
   product.featured = !product.featured;
   saveProducts();
   renderAdminProducts();
+  renderFeaturedProducts();
   showToast(`${product.name.slice(0, 18)}... ${product.featured ? 'marked as Featured' : 'unfeatured'}.`);
+
+  if (isSupabaseConfigured()) {
+    supabaseFetch(`products?id=eq.${encodeURIComponent(productId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        featured: product.featured,
+        updated_at: new Date().toISOString()
+      })
+    }).catch(e => console.warn("[Supabase Products] Featured sync failed:", e));
+  }
 }
 
-function deleteProduct(productId) {
+async function deleteProduct(productId) {
   const product = state.products.find(p => p.id === productId);
   if (!product) return;
   if (!confirm(`Are you sure you want to delete "${product.name}" from inventory?`)) return;
 
+  // Immediately remove from local state and update all views
   state.products = state.products.filter(p => p.id !== productId);
   saveProducts();
   applyFilters();
   renderAdminProducts();
   renderAdminBrands();
   renderAdminCategoriesTree();
+  renderProducts();
+  renderFeaturedProducts();
+  updateAllProductSteppers();
   showToast(`Product ${product.name.slice(0, 18)}... deleted.`);
+
+  // Cloud deletion: Remove permanently from Supabase products table
+  if (isSupabaseConfigured()) {
+    try {
+      await supabaseFetch(`products?id=eq.${encodeURIComponent(productId)}`, {
+        method: "DELETE"
+      });
+      console.log(`[Supabase Products] Product ${productId} deleted from cloud database.`);
+    } catch (err) {
+      console.warn(`[Supabase Products] Failed to delete product ${productId} from cloud:`, err);
+    }
+  }
 }
 
 function openEditProductModal(productId) {
@@ -2313,8 +2424,27 @@ function handleSaveEditProduct(e) {
   applyFilters();
   renderAdminProducts();
   renderAdminBrands();
+  renderProducts();
+  renderFeaturedProducts();
+  updateAllProductSteppers();
   closeEditProductModal();
   showToast(`Updated product "${product.name.slice(0, 18)}..." successfully!`);
+
+  if (isSupabaseConfigured()) {
+    supabaseFetch(`products?id=eq.${encodeURIComponent(product.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: product.name,
+        brand: product.brand,
+        discounted_price: product.discountedPrice,
+        original_price: product.originalPrice,
+        quantity: product.quantity,
+        in_stock: product.inStock,
+        description: product.description,
+        updated_at: new Date().toISOString()
+      })
+    }).catch(e => console.warn("[Supabase Products] Edit sync failed:", e));
+  }
 }
 
 function updateSingleProductPrice(productId) {
@@ -2342,7 +2472,21 @@ function updateSingleProductPrice(productId) {
   saveProducts();
   applyFilters();
   renderAdminProducts();
+  renderProducts();
+  renderFeaturedProducts();
+  updateAllProductSteppers();
   showToast(`Updated Price for ${product.name.slice(0, 18)}... to ₹${newSalePrice.toLocaleString('en-IN')}!`);
+
+  if (isSupabaseConfigured()) {
+    supabaseFetch(`products?id=eq.${encodeURIComponent(product.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        discounted_price: product.discountedPrice,
+        original_price: product.originalPrice,
+        updated_at: new Date().toISOString()
+      })
+    }).catch(e => console.warn("[Supabase Products] Price sync failed:", e));
+  }
 }
 
 function toggleProductStock(productId) {
@@ -2359,11 +2503,25 @@ function toggleProductStock(productId) {
   saveProducts();
   applyFilters();
   renderAdminProducts();
+  renderProducts();
+  renderFeaturedProducts();
+  updateAllProductSteppers();
   showToast(`${product.name.slice(0, 18)}... status: ${product.inStock ? 'In Stock' : 'Out of Stock'}.`);
+
+  if (isSupabaseConfigured()) {
+    supabaseFetch(`products?id=eq.${encodeURIComponent(product.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        in_stock: product.inStock,
+        quantity: product.quantity,
+        updated_at: new Date().toISOString()
+      })
+    }).catch(e => console.warn("[Supabase Products] Stock sync failed:", e));
+  }
 }
 
-function resetProductsToDefault() {
-  const confirmed = confirm("Are you sure? This will erase all admin changes on this browser (custom products, categories, stock, and orders) and restore original factory defaults.");
+async function resetProductsToDefault() {
+  const confirmed = confirm("Are you sure? This will restore original factory defaults to both local storage and cloud database.");
   if (!confirmed) return;
 
   state.products = JSON.parse(JSON.stringify(PRODUCTS_DATA));
@@ -2377,8 +2535,44 @@ function resetProductsToDefault() {
   renderAdminCategoriesTree();
   renderAdminDashboardStats();
   renderAdminOrders();
+  renderProducts();
+  renderFeaturedProducts();
+  updateAllProductSteppers();
   initAddProductForm();
-  showToast("All admin changes on this browser erased and restored to defaults!");
+  showToast("Restoring factory defaults...");
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabaseFetch("products?id=neq.placeholder", { method: "DELETE" });
+      for (const p of PRODUCTS_DATA) {
+        await supabaseFetch("products", {
+          method: "POST",
+          headers: { "Prefer": "resolution=merge-duplicates" },
+          body: JSON.stringify({
+            id: p.id,
+            name: p.name,
+            category: p.category,
+            category_name: p.categoryName,
+            subcategory: p.subcategory || null,
+            brand: p.brand,
+            original_price: p.originalPrice,
+            discounted_price: p.discountedPrice,
+            rating: p.rating,
+            reviews_count: p.reviewsCount,
+            image: p.image,
+            description: p.description,
+            specs: p.specs,
+            in_stock: p.inStock,
+            quantity: 10,
+            featured: false
+          })
+        });
+      }
+      showToast("Factory defaults restored to cloud database!");
+    } catch (err) {
+      console.warn("Could not reset cloud products:", err);
+    }
+  }
 }
 
 // --- CATEGORY OPERATIONS (Featured Star, Add, Delete, Rename) ---
@@ -2958,12 +3152,47 @@ function handleAddNewProduct(e) {
   renderAdminProducts();
   renderAdminBrands();
   renderAdminCategoriesTree();
+  renderProducts();
+  renderFeaturedProducts();
+  updateAllProductSteppers();
   populateAdminBrandDropdown();
   populateAdminCategoryDropdown();
 
   showToast(`Product "${title.slice(0, 18)}..." (${sku}) saved!`);
   resetAddProductForm();
   closeAddProductModal();
+
+  if (isSupabaseConfigured()) {
+    const supabaseRow = {
+      id: newProduct.id,
+      name: newProduct.name,
+      category: newProduct.category,
+      category_name: newProduct.categoryName,
+      subcategory: newProduct.subcategory || null,
+      brand: newProduct.brand,
+      original_price: Number(newProduct.originalPrice),
+      discounted_price: Number(newProduct.discountedPrice),
+      rating: Number(newProduct.rating || 5.0),
+      reviews_count: Number(newProduct.reviewsCount || 0),
+      image: newProduct.image,
+      description: newProduct.description,
+      specs: newProduct.specs || {},
+      in_stock: Boolean(newProduct.inStock),
+      quantity: Number(newProduct.quantity || 0),
+      featured: Boolean(newProduct.featured),
+      updated_at: new Date().toISOString()
+    };
+
+    supabaseFetch("products", {
+      method: "POST",
+      headers: { "Prefer": "resolution=merge-duplicates" },
+      body: JSON.stringify(supabaseRow)
+    }).then(() => {
+      console.log(`[Supabase Products] Product ${newProduct.id} synced to cloud.`);
+    }).catch(err => {
+      console.warn("[Supabase Products] Failed to sync new product:", err);
+    });
+  }
 }
 
 function resetAddProductForm() {
@@ -3263,12 +3492,33 @@ window.clearAdminOrders = clearAdminOrders;
 window.dispatchOrderEmail = dispatchOrderEmail;
 window.populateAdminBrandDropdown = populateAdminBrandDropdown;
 window.onBrandSelectChange = onBrandSelectChange;
+window.syncProductsFromCloud = syncProductsFromCloud;
+window.syncCategoriesFromCloud = syncCategoriesFromCloud;
+window.deleteProduct = deleteProduct;
 
-// Auto-sync admin orders from Supabase cloud database every 20 seconds while on admin view
+// Auto-sync products from Supabase cloud database every 10 seconds so deletions/additions reflect in real time on client-side
 if (typeof window !== "undefined") {
+  setInterval(() => {
+    if (isSupabaseConfigured()) {
+      syncProductsFromCloud();
+    }
+  }, 10000);
+
+  // Auto-sync admin orders from Supabase cloud database every 15 seconds while on admin view
   setInterval(() => {
     if (document.getElementById("admin-orders-list") && isSupabaseConfigured()) {
       syncAdminOrdersFromCloud();
     }
-  }, 20000);
+  }, 15000);
+
+  // Instant refresh on window focus
+  window.addEventListener("focus", () => {
+    if (isSupabaseConfigured()) {
+      syncProductsFromCloud();
+      syncCategoriesFromCloud();
+      if (document.getElementById("admin-orders-list")) {
+        syncAdminOrdersFromCloud();
+      }
+    }
+  });
 }
