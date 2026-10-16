@@ -1,8 +1,7 @@
 {
   "name": "narindra-techno-tools",
   "version": "1.0.0",
-  "description": "",
-  "main": "app.js",
+  "description": "Narindra Techno Tools E-Commerce Platform",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
